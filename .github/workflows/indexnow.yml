@@ -1,0 +1,61 @@
+name: IndexNow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.html'
+      - 'sitemap.xml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Notify IndexNow
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, urllib.request, urllib.error
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          key = "c0d4001df8154c96a16686268ae0dcaf"
+          host = "szymon-art-creator.github.io"
+          sitemap = Path("sitemap.xml")
+          if not sitemap.exists():
+              raise SystemExit("Brak sitemap.xml")
+
+          root = ET.parse(sitemap).getroot()
+          urls = [el.text.strip() for el in root.iter()
+                  if el.tag.split("}")[-1] == "loc" and el.text]
+          urls = list(dict.fromkeys(u for u in urls
+                  if u.startswith("https://" + host + "/")))
+          if not urls:
+              raise SystemExit("Brak adresów w mapie")
+
+          data = json.dumps({
+              "host": host,
+              "key": key,
+              "keyLocation": f"https://{host}/{key}.txt",
+              "urlList": urls
+          }).encode()
+          req = urllib.request.Request(
+              "https://api.indexnow.org/indexnow",
+              data=data,
+              headers={"Content-Type": "application/json; charset=utf-8"},
+              method="POST"
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  print("IndexNow:", response.status, "Adresy:", len(urls))
+          except urllib.error.HTTPError as e:
+              print("IndexNow HTTP:", e.code, e.read().decode(errors="replace"))
+              raise
+          PY
