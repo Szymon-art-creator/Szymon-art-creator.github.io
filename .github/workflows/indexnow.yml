@@ -1,1 +1,56 @@
-
+name: IndexNow — zgłaszanie zmian
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/*.html"
+      - ".github/workflows/indexnow.yml"
+      - "*.txt"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Zgłoś zmienione strony
+        env:
+          INDEXNOW_KEY: "540fa3609f6025466572acb866dd9953"
+          SITE_URL: "https://szymon-art-creator.github.io"
+        run: |
+          python3 - <<'PYINDEX'
+          import os, subprocess, json, time, urllib.request, urllib.error
+          from pathlib import Path
+          base=os.environ['SITE_URL']; key=os.environ['INDEXNOW_KEY']
+          keyurl=f'{base}/{key}.txt'
+          for attempt in range(24):
+              try:
+                  with urllib.request.urlopen(keyurl,timeout=10) as r:
+                      if r.read().decode().strip()==key: break
+              except Exception: pass
+              time.sleep(15)
+          else: raise SystemExit('Klucz nie jest jeszcze dostępny na GitHub Pages: '+keyurl)
+          event=os.environ.get('GITHUB_EVENT_NAME')
+          if event=='workflow_dispatch':
+              paths=[str(p) for p in Path('.').rglob('*.html') if '.git' not in p.parts]
+          else:
+              result=subprocess.run(['git','diff','--name-only','--diff-filter=ACMR','HEAD^','HEAD','--','*.html'],capture_output=True,text=True)
+              paths=result.stdout.splitlines() if result.returncode==0 else []
+              if not paths: paths=['index.html']
+          urls=[]
+          for path in paths:
+              p=Path(path)
+              if not p.is_file() or p.suffix.lower()!='.html': continue
+              urls.append(base+'/' if str(p)=='index.html' else base+'/'+p.as_posix())
+          urls=list(dict.fromkeys(urls))
+          if not urls: print('Brak zmienionych stron HTML'); raise SystemExit(0)
+          payload=json.dumps({'host':'szymon-art-creator.github.io','key':key,'keyLocation':keyurl,'urlList':urls}).encode()
+          req=urllib.request.Request('https://api.indexnow.org/indexnow',data=payload,headers={'Content-Type':'application/json; charset=utf-8'},method='POST')
+          try:
+              with urllib.request.urlopen(req,timeout=30) as response: print('IndexNow:',response.status,'zgłoszono',len(urls),'adresów:',urls)
+          except urllib.error.HTTPError as e:
+              print('IndexNow HTTP',e.code,e.read().decode(errors='replace')); raise
+          PYINDEX
