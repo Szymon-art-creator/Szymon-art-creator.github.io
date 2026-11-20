@@ -1,0 +1,9 @@
+SEO SZYMON-ART
+
+1. Wgraj zawartosc folderu do katalogu glownego repozytorium GitHub Pages.
+2. Zachowaj nazwy plikow.
+3. Po publikacji sprawdz: https://szymon-art-creator.github.io/sitemap.xml
+4. Dodaj witryne w Google Search Console i zglos sitemap.xml.
+5. SEO nie gwarantuje pozycji w wynikach.
+
+Zmieniono jedynie znaczniki w sekcjach head 28 stron. Dodano sitemap.xml i robots.txt.
