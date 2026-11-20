@@ -1,56 +1,85 @@
 name: IndexNow — zgłaszanie zmian
+
 on:
   push:
     branches: [main]
     paths:
-      - "**/*.html"
-      - ".github/workflows/indexnow.yml"
-      - "*.txt"
+      - '**/*.html'
+      - '.github/workflows/indexnow.yml'
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   submit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Zgłoś zmienione strony
         env:
-          INDEXNOW_KEY: "540fa3609f6025466572acb866dd9953"
-          SITE_URL: "https://szymon-art-creator.github.io"
+          INDEXNOW_KEY: '540fa3609f6025466572acb866dd9953'
+          SITE_URL: 'https://szymon-art-creator.github.io'
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
         run: |
           python3 - <<'PYINDEX'
           import os, subprocess, json, time, urllib.request, urllib.error
           from pathlib import Path
-          base=os.environ['SITE_URL']; key=os.environ['INDEXNOW_KEY']
-          keyurl=f'{base}/{key}.txt'
+
+          base = os.environ['SITE_URL'].rstrip('/')
+          key = os.environ['INDEXNOW_KEY']
+          keyurl = f'{base}/{key}.txt'
+          event = os.environ.get('GITHUB_EVENT_NAME', '')
+
+          if event == 'workflow_dispatch':
+              paths = [p.as_posix() for p in Path('.').rglob('*.html') if '.git' not in p.parts]
+          else:
+              before = os.environ.get('GITHUB_EVENT_BEFORE', '')
+              after = os.environ.get('GITHUB_SHA', 'HEAD')
+              if before and before != '0' * 40:
+                  cmd = ['git', 'diff', '--name-only', '--diff-filter=ACMR', before, after, '--', '*.html', '**/*.html']
+              else:
+                  cmd = ['git', 'ls-files', '*.html', '**/*.html']
+              result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+              paths = result.stdout.splitlines()
+
+          urls = []
+          for path in paths:
+              p = Path(path)
+              if p.is_file() and p.suffix.lower() == '.html':
+                  urls.append(base + '/' if p.as_posix() == 'index.html' else base + '/' + p.as_posix())
+          urls = list(dict.fromkeys(urls))
+          if not urls:
+              print('Brak nowych lub zmienionych stron HTML — nic nie zgłaszam.')
+              raise SystemExit(0)
+
           for attempt in range(24):
               try:
-                  with urllib.request.urlopen(keyurl,timeout=10) as r:
-                      if r.read().decode().strip()==key: break
-              except Exception: pass
+                  with urllib.request.urlopen(keyurl, timeout=10) as response:
+                      if response.read().decode().strip() == key:
+                          break
+              except Exception:
+                  pass
               time.sleep(15)
-          else: raise SystemExit('Klucz nie jest jeszcze dostępny na GitHub Pages: '+keyurl)
-          event=os.environ.get('GITHUB_EVENT_NAME')
-          if event=='workflow_dispatch':
-              paths=[str(p) for p in Path('.').rglob('*.html') if '.git' not in p.parts]
           else:
-              result=subprocess.run(['git','diff','--name-only','--diff-filter=ACMR','HEAD^','HEAD','--','*.html'],capture_output=True,text=True)
-              paths=result.stdout.splitlines() if result.returncode==0 else []
-              if not paths: paths=['index.html']
-          urls=[]
-          for path in paths:
-              p=Path(path)
-              if not p.is_file() or p.suffix.lower()!='.html': continue
-              urls.append(base+'/' if str(p)=='index.html' else base+'/'+p.as_posix())
-          urls=list(dict.fromkeys(urls))
-          if not urls: print('Brak zmienionych stron HTML'); raise SystemExit(0)
-          payload=json.dumps({'host':'szymon-art-creator.github.io','key':key,'keyLocation':keyurl,'urlList':urls}).encode()
-          req=urllib.request.Request('https://api.indexnow.org/indexnow',data=payload,headers={'Content-Type':'application/json; charset=utf-8'},method='POST')
+              raise SystemExit('Klucz IndexNow nie jest dostępny: ' + keyurl)
+
+          payload = json.dumps({
+              'host': 'szymon-art-creator.github.io',
+              'key': key,
+              'keyLocation': keyurl,
+              'urlList': urls,
+          }).encode('utf-8')
+          request = urllib.request.Request(
+              'https://api.indexnow.org/indexnow', data=payload,
+              headers={'Content-Type': 'application/json; charset=utf-8'}, method='POST'
+          )
           try:
-              with urllib.request.urlopen(req,timeout=30) as response: print('IndexNow:',response.status,'zgłoszono',len(urls),'adresów:',urls)
-          except urllib.error.HTTPError as e:
-              print('IndexNow HTTP',e.code,e.read().decode(errors='replace')); raise
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  print('IndexNow HTTP', response.status, '— zgłoszono', len(urls), 'adresów:', urls)
+          except urllib.error.HTTPError as error:
+              print('IndexNow HTTP', error.code, error.read().decode(errors='replace'))
+              raise
           PYINDEX
