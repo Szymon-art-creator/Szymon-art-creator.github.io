@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Franek Downloader — pobieranie i konwersja własnych plików audio i wideo w przeglądarce.">
+<title>Franek Downloader — Szymon-Art</title>
+<link rel="icon" href="favicon.ico"><link rel="icon" type="image/png" href="favicon.png">
+<style>
+*{box-sizing:border-box}body{margin:0;background:#100e18;color:#eee7fa;font:16px/1.6 Arial,sans-serif}main{max-width:760px;margin:40px auto;padding:0 20px}a{color:#d6b8ff}h1{font-size:clamp(29px,6vw,48px);margin:10px 0;color:#e5d2ff}p{color:#d5cbdf}.panel{background:#21192d;border:1px solid #68527e;border-radius:12px;padding:clamp(16px,4vw,26px);margin-top:22px}label{display:block;font-weight:700;margin:16px 0 7px}input,select,button{font:inherit;border-radius:6px;padding:12px;width:100%}input,select{background:#100e18;color:#fff;border:1px solid #80699d}input[type=file]{padding:10px}button{background:#a88bdf;color:#161020;font-weight:800;border:0;margin-top:16px;cursor:pointer}button:hover{background:#c9b5ef}button:disabled{opacity:.55;cursor:not-allowed}.note{font-size:13px;color:#c7bbd4}.status{margin-top:15px;white-space:pre-wrap;overflow-wrap:anywhere}.status a{display:inline-block;margin-top:8px}.back{font-size:14px;text-decoration:none}progress{width:100%;height:18px;margin-top:12px;accent-color:#ad91e1}#cancel{background:#42334e;color:#f2e9ff;border:1px solid #816c9c;margin-top:10px}[hidden]{display:none!important}.hint{border-left:3px solid #a88bdf;padding-left:12px}.or{text-align:center;color:#c9b5e6;margin:14px 0 0}
+</style>
+</head>
+<body><main>
+<a class="back" href="index.html">← Szymon-Art</a>
+<h1>🎸 FRANEK DOWNLOADER</h1>
+<p>Wybierz plik lub wklej link do obsługiwanego serwisu, wskaż format i kliknij <strong>POBIERZ / KONWERTUJ</strong>. Bez instalowania programu.</p>
+
+<div class="panel">
+<form id="download-form">
+<label for="file">Plik z komputera (najpewniejsza opcja)</label>
+<input id="file" type="file" accept="audio/*,video/*,.mkv,.avi,.flac,.m4a,.webm,.mov">
+<p class="or">— albo —</p>
+<label for="url">Link do filmu, muzyki lub bezpośredniego pliku</label>
+<input id="url" type="url" placeholder="https://archive.org/details/... lub https://przyklad.pl/film.mp4" autocomplete="url">
+<label for="format">Format wynikowy</label>
+<select id="format"><option value="original">Oryginalny — bez konwersji</option><option value="mp3">MP3 — dźwięk</option><option value="mp4">MP4 — wideo lub dźwięk</option><option value="avi">AVI — film</option><option value="mkv">MKV — film</option></select>
+<label for="quality">Jakość dźwięku</label>
+<select id="quality"><option value="192">Standardowa — 192 kb/s</option><option value="128">Mniejszy plik — 128 kb/s</option><option value="256">Wysoka — 256 kb/s</option><option value="320">Najwyższy bitrate — 320 kb/s</option></select>
+<p class="note">Bez konwersji plik zachowuje oryginalną jakość. Wyższy bitrate nie poprawia słabego źródła.</p>
+<button id="go" type="submit">POBIERZ / KONWERTUJ</button>
+<button id="cancel" type="button" hidden>ANULUJ</button>
+</form>
+<progress id="progress" hidden></progress>
+<div id="status" class="status" role="status" aria-live="polite"></div><button id="copy-log" type="button" hidden>SKOPIUJ KOMUNIKAT BŁĘDU</button>
+</div>
+<p class="note">Pliki lokalne i bezpośrednie linki konwertujemy w przeglądarce. Obsługiwane serwisy internetowe pobiera darmowy serwer Render (limit 250 MB, do 60 minut). Niektóre serwisy blokują serwery lub wymagają logowania; pliki DRM nie są obsługiwane. Pobieraj materiały, do których masz prawa.</p>
+</main>
+<script src="ffmpeg/ffmpeg.js"></script>
+<script>
+const form=document.querySelector('#download-form'),file=document.querySelector('#file'),url=document.querySelector('#url'),format=document.querySelector('#format'),quality=document.querySelector('#quality'),go=document.querySelector('#go'),cancel=document.querySelector('#cancel'),status=document.querySelector('#status'),progress=document.querySelector('#progress');
+let controller=null,ffmpeg=null,stopped=false,active=false,downloadUrl=null;
+const API='https://franek-downloader-server.onrender.com/download';
+const SUPPORTED=['youtube.com','youtu.be','youtube-nocookie.com','tiktok.com','instagram.com','facebook.com','fb.watch','vimeo.com','dailymotion.com','soundcloud.com','reddit.com','twitter.com','x.com','twitch.tv','bandcamp.com','mixcloud.com','bilibili.com','archive.org'];
+const isSupported=host=>SUPPORTED.some(d=>host===d||host.endsWith('.'+d));
+const ffLogs=[];const logLine=line=>{ffLogs.push(String(line));if(ffLogs.length>120)ffLogs.shift()};
+const show=s=>{status.textContent=s;document.querySelector('#copy-log').hidden=!s.startsWith('Nie udało się:');document.querySelector('#copy-log').textContent='SKOPIUJ KOMUNIKAT BŁĘDU'};
+const copyLog=document.querySelector('#copy-log');copyLog.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(status.textContent);copyLog.textContent='SKOPIOWANO'}catch{copyLog.textContent='ZAZNACZ TEKST KOMUNIKATU'}});
+const mb=n=>(n/1048576).toFixed(1)+' MB';
+function ready(){active=false;controller=null;go.disabled=false;cancel.hidden=true;progress.hidden=true;progress.removeAttribute('value');progress.removeAttribute('max')}
+function remoteFilename(disposition, fallback){
+ const utf=disposition.match(/filename\*=UTF-8''([^;]+)/i);
+ if(utf){try{return decodeURIComponent(utf[1].trim().replace(/^"|"$/g,''))}catch{}}
+ const plain=disposition.match(/filename="?([^";]+)"?/i);
+ return plain?plain[1].trim():fallback;
+}
+async function downloadFromServer(link,target){
+ controller=new AbortController();
+ const remoteFormat=['mp3','mp4','original'].includes(target)?target:'original';
+ show('Łączę z Render. Darmowy serwer może budzić się około minuty…');
+ const response=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:link.href,format:remoteFormat,quality:Number(quality.value)}),signal:controller.signal});
+ if(!response.ok){let message='HTTP '+response.status;try{const data=await response.json();message=typeof data.detail==='string'?data.detail:message}catch{}throw Error('Serwer Render: '+message)}
+ const filename=remoteFilename(response.headers.get('content-disposition')||'', 'franek-pobranie.'+(remoteFormat==='original'?'mp4':remoteFormat));
+ const total=Number(response.headers.get('content-length'))||0;
+ if(total>250*1048576)throw Error('Plik przekracza limit 250 MB.');
+ const reader=response.body?.getReader();if(!reader)throw Error('Serwer nie udostępnił danych pliku.');
+ const parts=[];let got=0;
+ while(true){const {done,value}=await reader.read();if(done)break;parts.push(value);got+=value.byteLength;if(got>250*1048576)throw Error('Plik przekracza limit 250 MB.');if(total){progress.max=total;progress.value=got}show('Pobieram z Render: '+mb(got)+(total?' / '+mb(total):''))}
+ return {blob:new Blob(parts,{type:response.headers.get('content-type')||'application/octet-stream'}),name:filename};
+}
+function download(blob,name){if(downloadUrl)URL.revokeObjectURL(downloadUrl);downloadUrl=URL.createObjectURL(blob);const a=document.createElement('a');a.href=downloadUrl;a.download=name;a.textContent='Kliknij tutaj, jeśli pobieranie nie zaczęło się automatycznie';status.replaceChildren(document.createTextNode('Gotowe: '+name+' ('+mb(blob.size)+'). '),a);a.click()}
+async function loadEngine(){
+ if(ffmpeg)return ffmpeg;
+ show('Ładuję lokalny silnik FFmpeg…');
+ if(!window.FFmpegWASM?.FFmpeg)throw Error('Brakuje biblioteki ffmpeg/ffmpeg.js na Szymon-Art.');
+ const f=new window.FFmpegWASM.FFmpeg();
+ f.on('log',({type,message})=>logLine('['+(type||'log')+'] '+(message||'')));
+ f.on('progress',({progress:p})=>{if(Number.isFinite(p)&&p>=0){progress.hidden=false;progress.max=100;progress.value=Math.min(100,Math.round(p*100));show('Konwersja: '+Math.min(100,Math.round(p*100))+'% (orientacyjnie)…')}});
+ // Kod silnika jest na GitHub Pages; duży plik WASM pozostaje na Drugim Dnie (Surge).
+ const coreURL=new URL('./ffmpeg/ffmpeg-core.js',location.href).href;
+ const partNames=['ffmpeg-core.part1','ffmpeg-core.part2'];
+ let wasmBlobURL=null;
+ try{
+   const chunks=[];
+   for(let i=0;i<partNames.length;i++){
+     show('Ładuję silnik FFmpeg — część '+(i+1)+' z '+partNames.length+'…');
+     const response=await fetch(new URL('./ffmpeg/'+partNames[i],location.href),{cache:'force-cache'});
+     if(!response.ok)throw Error('Nie udało się pobrać '+partNames[i]+' (HTTP '+response.status+').');
+     chunks.push(await response.arrayBuffer());
+   }
+   wasmBlobURL=URL.createObjectURL(new Blob(chunks,{type:'application/wasm'}));
+   show('Uruchamiam FFmpeg…');
+   await f.load({coreURL,wasmURL:wasmBlobURL});
+ }catch(e){try{f.terminate()}catch{}throw Error('Nie udało się załadować FFmpeg: '+(e?.message||String(e)))}
+ finally{if(wasmBlobURL)URL.revokeObjectURL(wasmBlobURL)}
+ ffmpeg=f;return f;
+}
+cancel.addEventListener('click',()=>{stopped=true;controller?.abort();if(ffmpeg){try{ffmpeg.terminate()}catch{}ffmpeg=null}show('Anulowano.');ready()});
+form.addEventListener('submit',async e=>{e.preventDefault();if(active)return;stopped=false;active=true;ffLogs.length=0;go.disabled=true;cancel.hidden=false;progress.hidden=false;progress.removeAttribute('value');let blob,name;
+try{
+if(file.files.length){const f=file.files[0];blob=f;name=f.name}else if(url.value.trim()){let link;try{link=new URL(url.value.trim());if(!['https:','http:'].includes(link.protocol))throw Error()}catch{throw Error('Podaj poprawny adres HTTP lub HTTPS.')}name=decodeURIComponent(link.pathname.split('/').pop()||'plik');if(isSupported(link.hostname.toLowerCase())){if(link.protocol!=='https:')throw Error('Serwisy internetowe wymagają HTTPS.');const remote=await downloadFromServer(link,format.value);blob=remote.blob;name=remote.name;}else{show('Pobieram plik z podanego adresu…');controller=new AbortController();const r=await fetch(link.href,{signal:controller.signal,credentials:'omit'});if(!r.ok)throw Error('Serwer zwrócił HTTP '+r.status);if((r.headers.get('content-type')||'').includes('text/html'))throw Error('Link prowadzi do strony HTML, nie do pliku.');const total=Number(r.headers.get('content-length'))||0;const reader=r.body?.getReader();if(!reader)throw Error('Nie można odczytać danych.');let parts=[],got=0;while(true){const {done,value}=await reader.read();if(done)break;parts.push(value);got+=value.byteLength;if(total){progress.max=total;progress.value=got}show('Pobieram: '+mb(got)+(total?' / '+mb(total):''))}blob=new Blob(parts,{type:r.headers.get('content-type')||'application/octet-stream'});}
+ }else throw Error('Wybierz plik z komputera albo wklej bezpośredni link.');
+if(stopped)return;
+const target=format.value;const audioBitrate=quality.value+'k';const base=name.replace(/\.[^.]+$/,'')||'franek-plik';const sourceExt=(name.match(/\.([a-z0-9]+)$/i)||[])[1]?.toLowerCase()||'bin';
+if(target==='original'||target===sourceExt){download(blob,name);return}
+if(blob.size>600*1048576)throw Error('Plik jest większy niż 600 MB. Konwersja w przeglądarce może przekroczyć dostępną pamięć — użyj mniejszego pliku.');
+ffLogs.length=0;const engine=await loadEngine();if(stopped)return;show('Przygotowuję plik do konwersji…');const input='input.'+sourceExt,output='output.'+target;await engine.writeFile(input,new Uint8Array(await blob.arrayBuffer()));let args;
+switch(target){
+case 'mp3':args=['-i',input,'-map','0:a:0','-vn','-c:a','libmp3lame','-b:a',audioBitrate,output];break;
+case 'mp4':args=sourceExt==='mp3'?['-i',input,'-map','0:a:0','-vn','-c:a','aac','-b:a',audioBitrate,output]:['-i',input,'-map','0:v:0?','-map','0:a:0?','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-b:a',audioBitrate,output];break;
+case 'avi':args=['-i',input,'-map','0:v:0?','-map','0:a:0?','-c:v','mpeg4','-q:v','5','-c:a','libmp3lame','-b:a',audioBitrate,output];break;
+case 'mkv':args=['-i',input,'-map','0:v:0?','-map','0:a:0?','-c:v','mpeg4','-q:v','5','-c:a','aac','-b:a',audioBitrate,output];break;
+default:throw Error('Nieobsługiwany format.');}
+
+show('Konwertuję — to może potrwać kilka minut…');const exit=await engine.exec(args);if(stopped)return;if(exit!==0)throw Error('FFmpeg zakończył pracę z kodem '+exit+'.\n\nDZIENNIK FFMPEG (ostatnie komunikaty):\n'+(ffLogs.slice(-30).join('\n')||'Brak komunikatów.'));const data=await engine.readFile(output);download(new Blob([data],{type:target==='mp3'?'audio/mpeg':'video/'+target}),base+'.'+target);try{await engine.deleteFile(input);await engine.deleteFile(output)}catch{}
+}catch(err){if(!stopped)show('Nie udało się: '+(err?.message||String(err))+(ffLogs.length&&!String(err?.message||'').includes('DZIENNIK FFMPEG')?'\n\nDZIENNIK FFMPEG:\n'+ffLogs.slice(-30).join('\n'):'')+'\n\nSkopiuj lub zrób zrzut tego komunikatu.')}finally{ready()}
+});
+</script>
+</body></html>
